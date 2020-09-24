@@ -10,6 +10,77 @@
 
 using namespace std;
 using namespace cv;
+template <typename T>
+string GetString(const T parameter)
+{
+	std::stringstream newStr;
+	newStr << parameter;
+	return newStr.str();
+}
+double GetDepthData(IColorFrame* colorFrame, IDepthFrame* depthFrame, IKinectSensor* kinectSensor, int x, int y) {
+	ICoordinateMapper*      m_pCoordinateMapper = NULL;
+	ColorSpacePoint*        m_pColorCoordinates = NULL;
+	//4通道的Mat，用于接收Kinect的Color数据
+	Mat i_rgb(1080, 1920, CV_8UC4);
+	Mat i_depth(424, 512, CV_8UC1);
+
+	HRESULT sign = kinectSensor->get_CoordinateMapper(&m_pCoordinateMapper);
+	while (FAILED(sign)) {
+		sign = kinectSensor->get_CoordinateMapper(&m_pCoordinateMapper);
+	}
+
+	m_pColorCoordinates = new ColorSpacePoint[512 * 424];
+	UINT16 *depthData = new UINT16[424 * 512];
+	UINT nDepthBufferSize = 424 * 512;
+
+	//获取Depth数据
+	if (SUCCEEDED(sign)) {
+		sign = depthFrame->CopyFrameDataToArray(nDepthBufferSize, reinterpret_cast<UINT16*>(depthData));
+	}
+
+	//获取Color图像到深度图像的映射矩阵
+	if (SUCCEEDED(sign)) {
+		sign = m_pCoordinateMapper->MapDepthFrameToColorSpace(512 * 424, depthData, 512 * 424, m_pColorCoordinates);
+	}
+
+	int res = 0;
+	int num = 0;
+	if (SUCCEEDED(sign))
+	{
+		//遍历所有映射点
+		for (int i = 0; i < 424 * 512; i++)
+		{
+			ColorSpacePoint p = m_pColorCoordinates[i];
+			if (p.X != -std::numeric_limits<float>::infinity() && p.Y != -std::numeric_limits<float>::infinity())
+			{
+				int colorX = static_cast<int>(p.X + 0.5f);
+				int colorY = static_cast<int>(p.Y + 0.5f);
+
+				if ((colorX >= 0 && colorX < 1920) && (colorY >= 0 && colorY < 1080))
+				{
+					//在KCF中心点选取10*10的方框，深度数据取10*10方框均值
+					for (int j = -5; j <= 5; j++) {
+						for (int k = -5; k <= 5; k++) {
+							if ((colorY * 1920 + colorX) == (1920 * (y + j) + x + k) && depthData[i] >= 500 && depthData[i] <= 4500) {
+								res = res + depthData[i];
+								num++;
+							}
+						}
+					}
+					
+				}
+			}
+		}
+	}
+	
+	if (num != 0 && res != 0) {
+		return res / num;
+	}
+
+	//不符合规范的深度信息返回值为-1
+	return -1;
+}
+
 
 class BoxExtractor {
 public:
@@ -119,16 +190,22 @@ int main(int argc, char* argv[]) {
 		while (1)
 		{
 			IColorFrame* colorFrame = nullptr;
+			IDepthFrame* depthFrame = nullptr;
 			HRESULT sign = colorFrameReader->AcquireLatestFrame(&colorFrame);
 			//判断Kinect图像帧是否获取成功，如果失败则跳出本次循环，成功则进行KCF处理
 			if (!SUCCEEDED(sign)) {
 				continue;
 			}
+			
+			sign = depthFrameReader->AcquireLatestFrame(&depthFrame);
+			if (!SUCCEEDED(sign)) {
+				continue;
+			}
+			
+
 			if (SUCCEEDED(sign)) {
 				colorFrame->CopyConvertedFrameDataToArray(bufferSize, reinterpret_cast<BYTE*>(frameC4.data), ColorImageFormat_Bgra);
 			}
-			SafeRelease(colorFrame);
-
 			//转换为3通道
 			mixChannels(&frameC4, 1, out, 2, frome_to, 4);
 
@@ -136,9 +213,15 @@ int main(int argc, char* argv[]) {
 				break;
 
 			result = tracker.update(frameC3);
-
+			int x = result.x + result.width / 2;
+			int y = result.y + result.height / 2;
+	
 			rectangle(frameC3, Point(result.x, result.y), Point(result.x + result.width, result.y + result.height), Scalar(0, 255, 255), 1, 8);
+			putText(frameC3, GetString(GetDepthData(colorFrame, depthFrame, kinectSensor, x, y)) + "mm", Point(result.x + 15, result.y - 10), FONT_HERSHEY_SIMPLEX, 1, (55, 255, 155), 2);
+			/*putText(frameC3, GetString(result.width) + "+"+ GetString(result.height), Point(result.x + 15, result.y - 10), FONT_HERSHEY_SIMPLEX, 1, (55, 255, 155), 2);*/
 			imshow("Image", frameC3);
+			SafeRelease(colorFrame);
+			SafeRelease(depthFrame);
 			
 			if (waitKey(1) == 27)break;
 		}
@@ -148,6 +231,7 @@ int main(int argc, char* argv[]) {
 	else {
 		cout << "Kinect开启失败" << endl;
 	}
+	kinectSensor->Close();
 }
 
 void BoxExtractor::mouseHandler(int event, int x, int y, int flags, void *param) {
@@ -246,6 +330,12 @@ Rect2d BoxExtractor::extract(const std::string& windowName, Mat img, bool showCr
 
 	return params.box;
 }
+
+
+
+
+
+
 
 
 
